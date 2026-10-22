@@ -1,0 +1,108 @@
+# =====================================================================
+# AI SEO Specialist Agent - Git Ignore Rules
+# =====================================================================
+
+# --- Database & Generated Runtime Data ---
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+agent/data/*.db
+agent/data/*.sqlite
+agent/data/*.db-journal
+
+# --- Secrets, Tokens & Environment Config ---
+.env
+.env.*
+!.env.example
+agent/data/.agent_token
+*.pem
+*.key
+
+# --- Runtime Screenshots & Captured Media ---
+agent/data/screenshots/*
+!agent/data/screenshots/.gitkeep
+
+# --- Python & Virtual Environments ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# --- Testing & Coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+nosetests.xml
+coverage.xml
+*.cover
+
+# --- Node / Chrome Extension Dependencies ---
+node_modules/
+extension/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# --- Browser & Playwright Profiles & Artifacts ---
+ChromeProfile/
+chrome_profile/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# --- Logs & Runtime PIDs ---
+*.log
+logs/
+*.pid
+*.seed
+
+# --- Operating System Files ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
+
+# --- IDE & Editor Files ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
