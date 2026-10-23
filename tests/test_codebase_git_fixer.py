@@ -185,3 +185,97 @@ async def test_apply_single_change_to_codebase():
         assert "<title>Brand New Page Title</title>" in content
         assert rec.status == "applied"
         assert mock_db.commit.called is True
+
+@pytest.mark.asyncio
+async def test_preserve_existing_h1_and_helmet():
+    fixer = LocalCodebaseGitFixer()
+    jsx_content = """
+    export default function StayPage() {
+      return (
+        <div>
+          <SeoHelmet
+            title="Beachfront Cabanas | Ocean View"
+            description="Explore authentic cabanas in Kalpitiya."
+            canonical="https://oceanviewbeachresort.lk/stay"
+          />
+          <h1 className="font-serif text-3xl">Your Private Cabana by the Sea</h1>
+        </div>
+      );
+    }
+    """
+
+    # 1. Test missing_h1 with instruction string on file with existing genuine H1
+    ok, modified, field = fixer.apply_fix_to_content(
+        content=jsx_content,
+        category="onpage",
+        issue_title="missing_h1",
+        new_val="Fix missing_h1 on https://oceanviewbeachresort.lk/stay.",
+        url="https://oceanviewbeachresort.lk/stay"
+    )
+    # Must preserve existing H1 and not overwrite with instruction!
+    assert ok is False
+    assert "Your Private Cabana by the Sea" in modified
+    assert "Fix missing_h1" not in modified
+
+    # 2. Test missing_meta_description on file with existing helmet description
+    ok_desc, modified_desc, _ = fixer.apply_fix_to_content(
+        content=jsx_content,
+        category="onpage",
+        issue_title="missing_meta_description",
+        new_val="//www.oceanviewbeachresort.lk.",
+        url="https://oceanviewbeachresort.lk/stay"
+    )
+    assert ok_desc is False
+    assert "//www.oceanviewbeachresort.lk." not in modified_desc
+
+@pytest.mark.asyncio
+async def test_sanitize_and_synthesize_instruction_string():
+    fixer = LocalCodebaseGitFixer()
+
+    # Reject instruction string for H1 and synthesize clean slug title
+    clean_h1 = fixer.sanitize_or_synthesize_seo_value(
+        raw_val="Fix missing_h1 on https://oceanviewbeachresort.lk/stay.",
+        field_name="h1",
+        url="https://oceanviewbeachresort.lk/stay"
+    )
+    assert clean_h1 == "Accommodations & Cabanas"
+    assert "Fix" not in clean_h1
+    assert "http" not in clean_h1
+
+    # Replace corrupted H1 with clean copy
+    corrupted_html = "<div><h1>Fix missing_h1 on https://oceanviewbeachresort.lk/stay.</h1></div>"
+    ok, fixed, field = fixer.apply_fix_to_content(
+        content=corrupted_html,
+        category="onpage",
+        issue_title="missing_h1",
+        new_val="Fix missing_h1 on https://oceanviewbeachresort.lk/stay.",
+        url="https://oceanviewbeachresort.lk/stay"
+    )
+    assert ok is True
+    assert "<h1>Accommodations & Cabanas</h1>" in fixed
+    assert "Fix missing_h1" not in fixed
+
+@pytest.mark.asyncio
+async def test_spider_synthesize_seo_recommendation():
+    from agent.crawler.spider import synthesize_seo_recommendation
+
+    # Missing H1 on /stay
+    fix_desc, change_data = synthesize_seo_recommendation(
+        url="https://oceanviewbeachresort.lk/stay",
+        issue_type="missing_h1",
+        base_url="https://oceanviewbeachresort.lk"
+    )
+    assert change_data["field"] == "h1"
+    assert change_data["proposed_value"] == "Accommodations & Cabanas"
+    assert "Fix missing_h1" not in fix_desc
+    assert "Ensure page has a clear H1 heading" in fix_desc
+
+    # Missing meta description
+    fix_desc_meta, change_data_meta = synthesize_seo_recommendation(
+        url="https://oceanviewbeachresort.lk/stay",
+        issue_type="missing_meta_description",
+        base_url="https://oceanviewbeachresort.lk"
+    )
+    assert change_data_meta["field"] == "meta_description"
+    assert "Discover Accommodations & Cabanas at Ocean View Beach Resort." in change_data_meta["proposed_value"]
+    assert "https://" not in change_data_meta["proposed_value"]

@@ -1,5 +1,6 @@
 import logging
 from typing import Dict, Any, List, Optional
+from urllib.parse import urlparse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -79,7 +80,9 @@ class ContentOptimizer:
 
             # Check for missing or short meta description
             if not meta_desc or len(meta_desc) < 70:
-                proposed_desc = f"Learn more about {title or 'our services'} at {url}. High quality solutions and insights."[:155]
+                domain_clean = urlparse(url).netloc.replace("www.", "").split(".")[0].title()
+                clean_title = (title or "").split("|")[0].split("-")[0].strip() or "our services"
+                proposed_desc = f"Learn more about {clean_title} at {domain_clean}. High quality solutions, expert support, and comprehensive details."[:155]
                 
                 # Safe check for existing recommendation (avoids MultipleResultsFound)
                 stmt = select(Recommendation.id).where(

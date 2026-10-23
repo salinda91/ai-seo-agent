@@ -1,6 +1,7 @@
 import asyncio
+import re
 import logging
-from typing import Dict, Any, List, Set, Optional
+from typing import Dict, Any, List, Set, Optional, Tuple
 from urllib.parse import urlparse, urljoin
 import xml.etree.ElementTree as ET
 import httpx
@@ -12,6 +13,93 @@ from ..models import CrawlResult, Recommendation
 from .analyzer import PageSEOAnalyzer
 
 logger = logging.getLogger("ai_seo.crawler.spider")
+
+def format_brand_name_from_domain(domain_part: str) -> str:
+    s = domain_part.replace('-', ' ').replace('_', ' ')
+    s = re.sub(r'([a-z])([A-Z])', r'\1 \2', s)
+    if ' ' not in s:
+        words = ['ocean', 'view', 'beach', 'resort', 'villas', 'villa', 'hotel', 'travel', 'tours', 'safari', 'kitesurf', 'labs', 'lab', 'tech', 'cloud', 'digital', 'global', 'solutions', 'live', 'life']
+        pattern = '|'.join(words)
+        spaced = re.sub(f'({pattern})', r' \1 ', s, flags=re.IGNORECASE)
+        s = ' '.join(spaced.split())
+    return s.title()
+
+def synthesize_seo_recommendation(
+    url: str,
+    issue_type: str,
+    page_title: Optional[str] = None,
+    page_meta: Optional[str] = None,
+    base_url: Optional[str] = None
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Produces brand-appropriate, human-readable copy and structured change data
+    for crawler-detected issues, preventing raw instruction strings or URLs
+    from leaking into recommendations and code fixes.
+    """
+    parsed = urlparse(url)
+    raw_path = parsed.path.strip("/")
+    domain = (parsed.netloc or urlparse(base_url or "").netloc).replace("www.", "").split(":")[0]
+    domain_part = domain.split(".")[0]
+    brand = format_brand_name_from_domain(domain_part) if domain_part else "Website"
+
+    slug_titles = {
+        "": "Home",
+        "stay": "Accommodations & Cabanas",
+        "dine": "Dining & Local Flavours",
+        "experiences": "Adventures & Experiences",
+        "faq": "Frequently Asked Questions",
+        "location": "Location & Directions",
+        "offers": "Special Offers & Packages",
+        "about": "About Us",
+        "contact": "Contact Us",
+        "privacy-policy": "Privacy Policy"
+    }
+    slug_clean = raw_path.lower()
+    topic = slug_titles.get(slug_clean)
+    if not topic:
+        last_seg = slug_clean.split("/")[-1]
+        topic = last_seg.replace("-", " ").replace("_", " ").title() if last_seg else brand
+
+    if issue_type == "missing_h1":
+        heading = f"Welcome to {brand}" if not slug_clean else topic
+        return (
+            f"Ensure page has a clear H1 heading: '{heading}'",
+            {"field": "h1", "proposed_value": heading}
+        )
+    elif issue_type in ("missing_meta_description", "long_meta_description", "short_meta_description"):
+        desc = f"Discover {topic} at {brand}. Explore our authentic offerings, services, and experiences."
+        return (
+            f"Update meta description to: '{desc}'",
+            {"field": "meta_description", "proposed_value": desc}
+        )
+    elif issue_type in ("missing_title", "long_title", "short_title"):
+        title = f"{topic} | {brand}"
+        return (
+            f"Update title to: '{title}'",
+            {"field": "title", "proposed_value": title}
+        )
+    elif issue_type == "missing_canonical":
+        return (
+            f"Add canonical link pointing to '{url}'",
+            {"field": "canonical", "proposed_value": url}
+        )
+    elif issue_type == "images_missing_alt":
+        alt = f"{topic} photo"
+        return (
+            f"Add descriptive alt text such as '{alt}' to images",
+            {"field": "image_alt", "proposed_value": alt}
+        )
+    elif issue_type == "missing_structured_data":
+        schema_json = f'{{\n  "@context": "https://schema.org",\n  "@type": "WebPage",\n  "name": "{topic}",\n  "url": "{url}"\n}}'
+        return (
+            "Add Schema.org WebPage structured data.",
+            {"field": "schema_org", "proposed_value": schema_json}
+        )
+
+    return (
+        f"Resolve {issue_type} on {url}.",
+        {"field": issue_type, "proposed_value": None}
+    )
 
 class SEOSpider:
     """
@@ -215,13 +303,13 @@ class SEOSpider:
                     if issue.get("severity") == "critical":
                         risk = "medium"
 
-                    fix_desc = f"Fix {issue.get('type')} on {data['url']}."
-                    if issue.get("type") == "missing_meta_description":
-                        fix_desc = "Add concise meta description (120-160 characters) summarizing page content."
-                    elif issue.get("type") == "missing_title":
-                        fix_desc = "Add descriptive <title> tag with primary keyword."
-                    elif issue.get("type") == "images_missing_alt":
-                        fix_desc = "Add descriptive alt attributes to all content images."
+                    fix_desc, change_data = synthesize_seo_recommendation(
+                        url=data["url"],
+                        issue_type=issue.get("type", "SEO Issue"),
+                        page_title=data.get("title"),
+                        page_meta=data.get("meta_description"),
+                        base_url=self.base_url
+                    )
 
                     # Safe check for existing recommendation (avoids MultipleResultsFound)
                     stmt_rec = select(Recommendation.id).where(
@@ -239,6 +327,7 @@ class SEOSpider:
                             category="onpage" if "title" in issue.get("type", "") or "meta" in issue.get("type", "") else "technical",
                             evidence=issue.get("message", ""),
                             proposed_fix=fix_desc,
+                            proposed_change_data=change_data,
                             risk_level=risk,
                             automation_eligible=True,
                             status="suggested"

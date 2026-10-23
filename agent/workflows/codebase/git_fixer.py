@@ -14,6 +14,81 @@ from ...models import Website, Recommendation, ChangeRecord, AuditLog
 
 logger = logging.getLogger("ai_seo.workflows.codebase.git_fixer")
 
+INSTRUCTION_PREFIXES = (
+    "fix ", "add ", "update ", "ensure ", "missing ", "todo:", "replace ",
+    "remove ", "optimize ", "audit ", "publish ", "resolve "
+)
+
+INSTRUCTION_KEYWORDS = (
+    "missing_h1", "missing_title", "missing_meta_description", "missing_canonical",
+    "missing_structured_data", "thin_content", "long_title", "long_meta_description",
+    "images_missing_alt", "120-160 characters", "summarizing page content",
+    "primary keyword", "prevent duplicate content indexing", "descriptive alt attributes",
+    "on https://", "on http://"
+)
+
+def is_instruction_or_defect_string(text: Optional[str]) -> bool:
+    if not text or not isinstance(text, str):
+        return True
+    t = text.strip()
+    if not t:
+        return True
+    t_lower = t.lower()
+    if any(t_lower.startswith(p) for p in INSTRUCTION_PREFIXES):
+        return True
+    if any(kw in t_lower for kw in INSTRUCTION_KEYWORDS):
+        return True
+    if re.match(r"^https?:\/\/", t, re.IGNORECASE) or t.startswith("//"):
+        return True
+    return False
+
+def format_brand_name_from_domain(domain_part: str) -> str:
+    s = domain_part.replace('-', ' ').replace('_', ' ')
+    s = re.sub(r'([a-z])([A-Z])', r'\1 \2', s)
+    if ' ' not in s:
+        words = ['ocean', 'view', 'beach', 'resort', 'villas', 'villa', 'hotel', 'travel', 'tours', 'safari', 'kitesurf', 'labs', 'lab', 'tech', 'cloud', 'digital', 'global', 'solutions', 'live', 'life']
+        pattern = '|'.join(words)
+        spaced = re.sub(f'({pattern})', r' \1 ', s, flags=re.IGNORECASE)
+        s = ' '.join(spaced.split())
+    return s.title()
+
+def synthesize_fallback_seo_copy(url: str, field_name: str, existing_title: Optional[str] = None) -> str:
+    parsed = urlparse(url)
+    slug = parsed.path.strip("/")
+    domain = parsed.netloc.replace("www.", "").split(":")[0]
+    domain_part = domain.split(".")[0]
+    brand_name = format_brand_name_from_domain(domain_part) if domain_part else "Website"
+
+    slug_map = {
+        "": "Home",
+        "stay": "Accommodations & Cabanas",
+        "dine": "Dining & Local Flavours",
+        "experiences": "Adventures & Experiences",
+        "faq": "Frequently Asked Questions",
+        "location": "Location & Directions",
+        "offers": "Special Offers & Packages",
+        "about": "About Us",
+        "contact": "Contact Us",
+        "privacy-policy": "Privacy Policy"
+    }
+    slug_clean = slug.lower().strip("/")
+    slug_title = slug_map.get(slug_clean)
+    if not slug_title:
+        last_seg = slug_clean.split("/")[-1]
+        slug_title = last_seg.replace("-", " ").replace("_", " ").title() if last_seg else brand_name
+
+    if field_name == "h1":
+        return slug_title if slug_clean else f"Welcome to {brand_name}"
+    elif field_name == "meta_description":
+        return f"Discover {slug_title} at {brand_name}. High quality service, authentic experiences, and complete information."
+    elif field_name == "title":
+        return f"{slug_title} | {brand_name}"
+    elif field_name == "canonical":
+        return url
+    elif field_name == "image_alt":
+        return f"{slug_title} photo"
+    return slug_title
+
 class LocalCodebaseGitFixer:
     """
     Automates SEO issue fixes for Non-WordPress websites by connecting to
@@ -131,6 +206,39 @@ class LocalCodebaseGitFixer:
 
         return None
 
+    def sanitize_or_synthesize_seo_value(
+        self,
+        raw_val: Optional[str],
+        field_name: str,
+        url: str,
+        existing_content: str = "",
+        title_hint: Optional[str] = None
+    ) -> str:
+        """
+        Guarantees that no instruction text, defect name, or raw URL is ever
+        injected into user source code (HTML/JSX/Blade/etc.).
+        """
+        val = (raw_val or "").strip()
+
+        # Canonical field legitimately expects a valid URL
+        if field_name == "canonical":
+            if re.match(r"^https?:\/\/", val, re.IGNORECASE):
+                return val
+            return url
+
+        # For user-facing text (h1, title, meta_description, image_alt):
+        if is_instruction_or_defect_string(val):
+            # Try to extract quoted candidate if present: e.g. Update title to: 'My Title'
+            quoted_match = re.search(r"['\"]([^'\"]{3,})['\"]", val)
+            if quoted_match:
+                cand = quoted_match.group(1).strip()
+                if not is_instruction_or_defect_string(cand):
+                    return cand
+            return synthesize_fallback_seo_copy(url, field_name, title_hint)
+
+        val = val.strip("'\"")
+        return val
+
     def apply_fix_to_content(
         self,
         content: str,
@@ -138,10 +246,12 @@ class LocalCodebaseGitFixer:
         issue_title: str,
         new_val: str,
         before_val: Optional[str] = None,
-        field_hint: Optional[str] = None
+        field_hint: Optional[str] = None,
+        url: Optional[str] = None
     ) -> Tuple[bool, str, str]:
         """
         Applies SEO tag insertion or replacement to raw file content.
+        Protects existing valid user headings and titles from being overwritten.
         Returns: (success: bool, updated_content: str, field_name: str)
         """
         title_lower = (issue_title or "").lower()
@@ -149,86 +259,166 @@ class LocalCodebaseGitFixer:
         original_content = content
         field_name = "custom"
 
-        # 1. Title Tag
-        if hint_lower == "title" or "title" in title_lower or category == "title":
+        # Determine effective field name
+        if hint_lower in ("title",) or "title" in title_lower or category == "title":
             field_name = "title"
+        elif hint_lower in ("meta_description", "description") or "description" in title_lower or "meta" in title_lower:
+            field_name = "meta_description"
+        elif hint_lower in ("canonical",) or "canonical" in title_lower:
+            field_name = "canonical"
+        elif hint_lower in ("viewport",) or "viewport" in title_lower:
+            field_name = "viewport"
+        elif hint_lower in ("image_alt", "alt") or "alt" in title_lower or "images" in title_lower:
+            field_name = "image_alt"
+        elif hint_lower in ("schema", "schema_org") or "structured data" in title_lower or "schema" in title_lower:
+            field_name = "schema_org"
+        elif hint_lower in ("h1", "heading") or "h1" in title_lower or "heading" in title_lower or category == "headings":
+            field_name = "h1"
+
+        # Sanitize value to guarantee zero instruction/defect text leak
+        clean_val = self.sanitize_or_synthesize_seo_value(
+            raw_val=new_val,
+            field_name=field_name,
+            url=url or "",
+            existing_content=content,
+            title_hint=issue_title
+        )
+
+        # 1. Title Tag
+        if field_name == "title":
+            if "missing" in title_lower:
+                title_match = re.search(r"<title[^>]*>(.*?)</title>", content, re.IGNORECASE | re.DOTALL)
+                helmet_title = re.search(r'title=["\']([^"\']+)["\']', content)
+                meta_title = re.search(r"title:\s*['\"]([^'\"]+)['\"]", content)
+                existing_text = ""
+                if title_match:
+                    existing_text = re.sub(r"<[^>]+>", "", title_match.group(1)).strip()
+                elif helmet_title:
+                    existing_text = helmet_title.group(1).strip()
+                elif meta_title:
+                    existing_text = meta_title.group(1).strip()
+
+                if len(existing_text) > 3 and not is_instruction_or_defect_string(existing_text):
+                    logger.info(f"Existing valid title preserved: '{existing_text[:40]}...'. Not overwriting.")
+                    return False, content, "title"
+
             if re.search(r"<title[^>]*>.*?</title>", content, re.IGNORECASE | re.DOTALL):
                 content = re.sub(
                     r"<title[^>]*>.*?</title>",
-                    f"<title>{new_val}</title>",
+                    f"<title>{clean_val}</title>",
                     content,
                     count=1,
                     flags=re.IGNORECASE | re.DOTALL
                 )
+            elif "title=" in content and ("SeoHelmet" in content or "Helmet" in content):
+                content = re.sub(
+                    r'title=["\'][^"\']*["\']',
+                    f'title="{clean_val}"',
+                    content,
+                    count=1
+                )
+            elif "export const metadata" in content:
+                content = re.sub(
+                    r"title:\s*['\"][^'\"]*['\"]",
+                    f"title: '{clean_val}'",
+                    content,
+                    count=1
+                )
             elif "<head>" in content.lower():
                 content = re.sub(
                     r"(<head[^>]*>)",
-                    f"\\1\n    <title>{new_val}</title>",
+                    f"\\1\n    <title>{clean_val}</title>",
                     content,
                     count=1,
                     flags=re.IGNORECASE
                 )
-            elif "export const metadata" in content:
-                # Next.js App Router
-                content = re.sub(
-                    r"title:\s*['\"][^'\"]*['\"]",
-                    f"title: '{new_val}'",
-                    content,
-                    count=1
-                )
 
         # 2. Meta Description
-        elif hint_lower in ("meta_description", "description") or "meta description" in title_lower or "description" in title_lower:
-            field_name = "meta_description"
+        elif field_name == "meta_description":
+            if "missing" in title_lower:
+                desc_match = re.search(r'<meta\s+name=["\']description["\']\s+content=["\']([^"\']*)["\']', content, re.IGNORECASE)
+                helmet_desc = re.search(r'description=["\']([^"\']+)["\']', content)
+                meta_desc = re.search(r"description:\s*['\"]([^'\"]+)['\"]", content)
+                existing_text = ""
+                if desc_match:
+                    existing_text = desc_match.group(1).strip()
+                elif helmet_desc:
+                    existing_text = helmet_desc.group(1).strip()
+                elif meta_desc:
+                    existing_text = meta_desc.group(1).strip()
+
+                if len(existing_text) > 15 and not is_instruction_or_defect_string(existing_text):
+                    logger.info(f"Existing valid meta description preserved: '{existing_text[:40]}...'. Not overwriting.")
+                    return False, content, "meta_description"
+
             meta_desc_regex = r'<meta\s+name=["\']description["\']\s+content=["\'][^"\']*["\']\s*\/?>'
             if re.search(meta_desc_regex, content, re.IGNORECASE):
                 content = re.sub(
                     meta_desc_regex,
-                    f'<meta name="description" content="{new_val}">',
+                    f'<meta name="description" content="{clean_val}">',
                     content,
                     count=1,
                     flags=re.IGNORECASE
                 )
-            elif "<head>" in content.lower():
+            elif "description=" in content and ("SeoHelmet" in content or "Helmet" in content):
                 content = re.sub(
-                    r"(<head[^>]*>)",
-                    f'\\1\n    <meta name="description" content="{new_val}">',
+                    r'description=["\'][^"\']*["\']',
+                    f'description="{clean_val}"',
                     content,
-                    count=1,
-                    flags=re.IGNORECASE
+                    count=1
                 )
             elif "export const metadata" in content:
                 content = re.sub(
                     r"description:\s*['\"][^'\"]*['\"]",
-                    f"description: '{new_val}'",
+                    f"description: '{clean_val}'",
                     content,
                     count=1
-                )
-
-        # 3. Canonical Tag
-        elif hint_lower == "canonical" or "canonical" in title_lower:
-            field_name = "canonical"
-            can_regex = r'<link\s+rel=["\']canonical["\']\s+href=["\'][^"\']*["\']\s*\/?>'
-            if re.search(can_regex, content, re.IGNORECASE):
-                content = re.sub(
-                    can_regex,
-                    f'<link rel="canonical" href="{new_val}" />',
-                    content,
-                    count=1,
-                    flags=re.IGNORECASE
                 )
             elif "<head>" in content.lower():
                 content = re.sub(
                     r"(<head[^>]*>)",
-                    f'\\1\n    <link rel="canonical" href="{new_val}" />',
+                    f'\\1\n    <meta name="description" content="{clean_val}">',
+                    content,
+                    count=1,
+                    flags=re.IGNORECASE
+                )
+
+        # 3. Canonical Tag
+        elif field_name == "canonical":
+            if "missing" in title_lower:
+                can_match = re.search(r'<link\s+rel=["\']canonical["\']\s+href=["\']([^"\']*)["\']', content, re.IGNORECASE)
+                helmet_can = re.search(r'canonical=["\']([^"\']+)["\']', content)
+                if (can_match and can_match.group(1).strip()) or (helmet_can and helmet_can.group(1).strip()):
+                    logger.info("Existing canonical link already present. Not overwriting.")
+                    return False, content, "canonical"
+
+            can_regex = r'<link\s+rel=["\']canonical["\']\s+href=["\'][^"\']*["\']\s*\/?>'
+            if re.search(can_regex, content, re.IGNORECASE):
+                content = re.sub(
+                    can_regex,
+                    f'<link rel="canonical" href="{clean_val}" />',
+                    content,
+                    count=1,
+                    flags=re.IGNORECASE
+                )
+            elif "canonical=" in content and ("SeoHelmet" in content or "Helmet" in content):
+                content = re.sub(
+                    r'canonical=["\'][^"\']*["\']',
+                    f'canonical="{clean_val}"',
+                    content,
+                    count=1
+                )
+            elif "<head>" in content.lower():
+                content = re.sub(
+                    r"(<head[^>]*>)",
+                    f'\\1\n    <link rel="canonical" href="{clean_val}" />',
                     content,
                     count=1,
                     flags=re.IGNORECASE
                 )
 
         # 4. Viewport Tag
-        elif hint_lower == "viewport" or "viewport" in title_lower:
-            field_name = "viewport"
+        elif field_name == "viewport":
             if "<head>" in content.lower() and "name=\"viewport\"" not in content.lower():
                 content = re.sub(
                     r"(<head[^>]*>)",
@@ -239,23 +429,20 @@ class LocalCodebaseGitFixer:
                 )
 
         # 5. Image Alt Attributes
-        elif hint_lower in ("image_alt", "alt") or "alt" in title_lower or "images" in title_lower:
-            field_name = "image_alt"
-            # Find img tags without alt or with empty alt
+        elif field_name == "image_alt":
             def alt_replacer(match):
                 tag = match.group(0)
                 if 'alt=' not in tag.lower():
-                    return tag[:-1] + f' alt="{new_val}">'
+                    return tag[:-1] + f' alt="{clean_val}">'
                 elif 'alt=""' in tag or "alt=''" in tag:
-                    return tag.replace('alt=""', f'alt="{new_val}"').replace("alt=''", f'alt="{new_val}"')
+                    return tag.replace('alt=""', f'alt="{clean_val}"').replace("alt=''", f'alt="{clean_val}"')
                 return tag
 
             content = re.sub(r'<img\s+[^>]*>', alt_replacer, content, count=3, flags=re.IGNORECASE)
 
         # 6. Structured Data (Schema.org JSON-LD)
-        elif hint_lower in ("schema", "schema_org") or "structured data" in title_lower or "schema" in title_lower:
-            field_name = "schema_org"
-            schema_block = f'\n    <script type="application/ld+json">\n{new_val}\n    </script>\n'
+        elif field_name == "schema_org":
+            schema_block = f'\n    <script type="application/ld+json">\n{clean_val}\n    </script>\n'
             if "</head>" in content.lower():
                 content = re.sub(
                     r"(<\/head>)",
@@ -266,12 +453,21 @@ class LocalCodebaseGitFixer:
                 )
 
         # 7. H1 Heading Tag
-        elif hint_lower in ("h1", "heading") or "h1" in title_lower or "heading" in title_lower or category == "headings":
-            field_name = "h1"
-            if re.search(r"<h1[^>]*>.*?</h1>", content, re.IGNORECASE | re.DOTALL):
+        elif field_name == "h1":
+            h1_match = re.search(r"<h1([^>]*)>(.*?)</h1>", content, re.IGNORECASE | re.DOTALL)
+            if h1_match:
+                attrs = h1_match.group(1)
+                inner_h1 = h1_match.group(2)
+                plain_inner = re.sub(r"<[^>]+>", "", inner_h1).strip()
+                # If existing H1 has genuine content and is not an instruction string: PRESERVE IT!
+                if len(plain_inner) > 3 and not is_instruction_or_defect_string(plain_inner):
+                    logger.info(f"Existing valid <h1> preserved: '{plain_inner[:40]}...'. Not overwriting.")
+                    return False, content, "h1"
+
+                # Otherwise (empty or corrupted instruction string), replace it cleanly
                 content = re.sub(
                     r"<h1([^>]*)>.*?</h1>",
-                    f"<h1\\1>{new_val}</h1>",
+                    f"<h1\\1>{clean_val}</h1>",
                     content,
                     count=1,
                     flags=re.IGNORECASE | re.DOTALL
@@ -279,7 +475,7 @@ class LocalCodebaseGitFixer:
             elif "<body" in content.lower():
                 content = re.sub(
                     r"(<body[^>]*>)",
-                    f"\\1\n    <h1>{new_val}</h1>",
+                    f"\\1\n    <h1>{clean_val}</h1>",
                     content,
                     count=1,
                     flags=re.IGNORECASE
@@ -287,7 +483,7 @@ class LocalCodebaseGitFixer:
             elif "<main" in content.lower():
                 content = re.sub(
                     r"(<main[^>]*>)",
-                    f"\\1\n    <h1>{new_val}</h1>",
+                    f"\\1\n    <h1>{clean_val}</h1>",
                     content,
                     count=1,
                     flags=re.IGNORECASE
@@ -355,30 +551,50 @@ class LocalCodebaseGitFixer:
             try:
                 content = target_file.read_text(encoding="utf-8", errors="replace")
                 
-                # Determine value to inject
-                new_value = ""
+                # Determine candidate value and field hint
                 change_data = rec.proposed_change_data or {}
+                candidate_value = ""
                 if change_data.get("new_value"):
-                    new_value = change_data["new_value"]
+                    candidate_value = change_data["new_value"]
                 elif change_data.get("proposed_value"):
-                    new_value = change_data["proposed_value"]
+                    candidate_value = change_data["proposed_value"]
                 elif change_data.get("after", {}).get("meta_description"):
-                    new_value = change_data["after"]["meta_description"]
+                    candidate_value = change_data["after"]["meta_description"]
                 elif change_data.get("after", {}).get("title"):
-                    new_value = change_data["after"]["title"]
-                elif "title" in rec.issue_title.lower():
-                    new_value = rec.proposed_fix.split(":")[-1].strip(" '\"")
-                elif "description" in rec.issue_title.lower():
-                    new_value = rec.proposed_fix.split(":")[-1].strip(" '\"")
-                else:
-                    new_value = rec.proposed_fix
+                    candidate_value = change_data["after"]["title"]
+                elif rec.proposed_fix:
+                    candidate_value = rec.proposed_fix
+
+                # Determine field hint
+                field_hint = None
+                title_lower = (rec.issue_title or "").lower()
+                if "title" in title_lower:
+                    field_hint = "title"
+                elif "description" in title_lower or "meta" in title_lower:
+                    field_hint = "meta_description"
+                elif "h1" in title_lower or "heading" in title_lower or rec.category == "headings":
+                    field_hint = "h1"
+                elif "canonical" in title_lower:
+                    field_hint = "canonical"
+                elif "alt" in title_lower or "image" in title_lower:
+                    field_hint = "image_alt"
+
+                new_value = self.sanitize_or_synthesize_seo_value(
+                    raw_val=candidate_value,
+                    field_name=field_hint or "custom",
+                    url=rec.url,
+                    existing_content=content,
+                    title_hint=rec.issue_title
+                )
 
                 success, updated_content, field_name = self.apply_fix_to_content(
                     content=content,
                     category=rec.category,
                     issue_title=rec.issue_title,
                     new_val=new_value,
-                    before_val=rec.evidence
+                    before_val=rec.evidence,
+                    field_hint=field_hint,
+                    url=rec.url
                 )
 
                 if success:
@@ -399,6 +615,11 @@ class LocalCodebaseGitFixer:
                     )
                     db.add(change_rec)
                     change_records_saved.append(rel_path)
+                else:
+                    # If already satisfied in template, mark applied so it doesn't linger as unresolved defect
+                    if field_hint in ("h1", "title", "meta_description", "canonical"):
+                        logger.info(f"Recommendation ID={rec.id} ({rec.issue_title}) for {rec.url} already satisfied in {target_file.name}. Marking as applied.")
+                        rec.status = "applied"
 
             except Exception as e:
                 logger.warning(f"Error applying fix to {target_file}: {e}")
@@ -522,13 +743,22 @@ class LocalCodebaseGitFixer:
                 issue_title = rec.issue_title or issue_title
                 before_val = rec.evidence
 
+        sanitized_value = self.sanitize_or_synthesize_seo_value(
+            raw_val=new_value,
+            field_name=field_name,
+            url=url,
+            existing_content=content,
+            title_hint=issue_title
+        )
+
         success, updated_content, actual_field = self.apply_fix_to_content(
             content=content,
             category=category,
             issue_title=issue_title,
-            new_val=new_value,
+            new_val=sanitized_value,
             before_val=before_val,
-            field_hint=field_name
+            field_hint=field_name,
+            url=url
         )
 
         if not success:
@@ -552,7 +782,7 @@ class LocalCodebaseGitFixer:
             url=url,
             field_name=f"{rel_path}:{actual_field}",
             before_value=before_val or "empty",
-            after_value=new_value,
+            after_value=sanitized_value,
             status="applied"
         )
         db.add(change_rec)

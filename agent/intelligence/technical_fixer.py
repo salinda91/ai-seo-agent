@@ -130,7 +130,8 @@ class TechnicalSEOFixer:
                     proposed_fix=f"Add `<link rel='canonical' href='{url}' />` to prevent duplicate content indexing.",
                     expected_benefit="Consolidates page authority and prevents duplicate URL penalties.",
                     risk_level="low",
-                    db=db
+                    db=db,
+                    proposed_change_data={"field": "canonical", "proposed_value": url}
                 )
 
         await db.commit()
@@ -147,7 +148,8 @@ class TechnicalSEOFixer:
         proposed_fix: str,
         expected_benefit: str,
         risk_level: str,
-        db: AsyncSession
+        db: AsyncSession,
+        proposed_change_data: Optional[Dict[str, Any]] = None
     ):
         stmt = select(Recommendation.id).where(
             Recommendation.website_id == website_id,
@@ -164,6 +166,7 @@ class TechnicalSEOFixer:
                 category=category,
                 evidence=evidence,
                 proposed_fix=proposed_fix,
+                proposed_change_data=proposed_change_data or {},
                 expected_benefit=expected_benefit,
                 risk_level=risk_level,
                 automation_eligible=True,
