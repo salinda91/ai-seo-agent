@@ -14,7 +14,7 @@ from ..browser.controller import browser_controller
 from ..automation.scheduler import continuous_loop
 from ..automation.queue import task_queue
 
-from .routes import websites, gsc, crawler, keywords, cms, tasks, onboarding, pipeline, codebase
+from .routes import websites, gsc, crawler, keywords, cms, tasks, onboarding, pipeline, codebase, sitemap
 from . import websocket
 
 logging.basicConfig(
@@ -70,6 +70,7 @@ app.include_router(tasks.router)
 app.include_router(onboarding.router)
 app.include_router(pipeline.router)
 app.include_router(codebase.router)
+app.include_router(sitemap.router)
 app.include_router(websocket.router)
 
 @app.get("/api/status")

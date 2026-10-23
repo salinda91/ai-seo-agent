@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Play, AlertCircle, CheckCircle2, ChevronDown, ChevronRight, RefreshCw, Filter, Zap, GitCommit, Loader2 } from 'lucide-react';
-import { Website, CrawlPage } from '../types';
+import { Play, AlertCircle, CheckCircle2, ChevronDown, ChevronRight, RefreshCw, Filter, Zap, GitCommit, Loader2, AlertTriangle, Sparkles } from 'lucide-react';
+import { Website, CrawlPage, SitemapStatusResponse } from '../types';
 import { api } from '../services/api';
 
 interface Props {
@@ -10,6 +10,8 @@ interface Props {
 export const SiteAuditView: React.FC<Props> = ({ website }) => {
   const [loading, setLoading] = useState(false);
   const [autoFixing, setAutoFixing] = useState(false);
+  const [creatingSitemap, setCreatingSitemap] = useState(false);
+  const [sitemapStatus, setSitemapStatus] = useState<SitemapStatusResponse | null>(null);
   const [fixResultMsg, setFixResultMsg] = useState<{ text: string; error?: boolean } | null>(null);
   const [crawlData, setCrawlData] = useState<{
     total_pages: number;
@@ -31,9 +33,40 @@ export const SiteAuditView: React.FC<Props> = ({ website }) => {
     }
   };
 
+  const loadSitemapStatus = async () => {
+    if (!website) return;
+    try {
+      const status = await api.getSitemapStatus(website.id);
+      setSitemapStatus(status);
+    } catch (err: any) {
+      console.warn('Could not load sitemap status in audit:', err);
+    }
+  };
+
   useEffect(() => {
     loadAudit();
+    loadSitemapStatus();
   }, [website]);
+
+  const handleCreateAndUploadSitemap = async () => {
+    if (!website) return;
+    setCreatingSitemap(true);
+    setFixResultMsg({ text: 'Creating XML sitemap, pushing to Git, and submitting to GSC...' });
+    try {
+      const res = await api.createAndUploadSitemap(website.id);
+      if (res.success) {
+        setFixResultMsg({ text: res.message || 'Sitemap created and uploaded successfully!', error: false });
+        await loadSitemapStatus();
+        await loadAudit();
+      } else {
+        setFixResultMsg({ text: res.error || 'Failed to create sitemap.', error: true });
+      }
+    } catch (err: any) {
+      setFixResultMsg({ text: `Failed: ${err.message}`, error: true });
+    } finally {
+      setCreatingSitemap(false);
+    }
+  };
 
   const handleStartCrawl = async () => {
     if (!website) return;
@@ -185,6 +218,38 @@ export const SiteAuditView: React.FC<Props> = ({ website }) => {
           <span className="text-base font-bold text-indigo-400">{crawlData?.total_issues ?? 0}</span>
         </div>
       </div>
+
+      {/* Missing XML Sitemap Warning & Create/Upload Button */}
+      {sitemapStatus && !sitemapStatus.available && (
+        <div className="bg-gradient-to-r from-amber-950/60 via-slate-900 to-indigo-950/40 border border-amber-800/80 rounded-xl p-3 flex items-center justify-between shadow-sm">
+          <div className="flex items-center space-x-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <div>
+              <div className="text-xs font-bold text-white flex items-center space-x-1.5">
+                <span>XML Sitemap Not Available</span>
+                <span className="text-[10px] bg-rose-500/20 text-rose-300 px-1.5 py-0.2 rounded font-mono">
+                  HTTP {sitemapStatus.status_code || 404}
+                </span>
+              </div>
+              <p className="text-[11px] text-amber-200/80 mt-0.5">
+                No valid XML sitemap detected. Search engines cannot index your pages reliably.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleCreateAndUploadSitemap}
+            disabled={creatingSitemap}
+            className="shrink-0 ml-3 px-3 py-1.5 bg-gradient-to-r from-amber-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold flex items-center space-x-1.5 shadow transition"
+          >
+            {creatingSitemap ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="w-3.5 h-3.5 text-amber-200" />
+            )}
+            <span>{creatingSitemap ? 'Creating...' : 'Create & Upload Sitemap'}</span>
+          </button>
+        </div>
+      )}
 
       {/* Severity Filter Pills */}
       <div className="flex items-center space-x-1 overflow-x-auto text-[11px]">

@@ -11,7 +11,9 @@ import {
   PipelineStatus,
   BusinessProfileData,
   CodebaseValidationResult,
-  CodebaseFixResult
+  CodebaseFixResult,
+  SitemapStatusResponse,
+  CreateSitemapResponse
 } from '../types';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8765';
@@ -143,6 +145,18 @@ export class ApiClient {
     return this.fetchJson('/api/gsc/sitemaps', {
       method: 'POST',
       body: JSON.stringify({ website_id: websiteId, sitemap_url: sitemapUrl })
+    });
+  }
+
+  // XML Sitemap Generator & Uploader
+  async getSitemapStatus(websiteId: number): Promise<SitemapStatusResponse> {
+    return this.fetchJson(`/api/sitemap/status/${websiteId}`);
+  }
+
+  async createAndUploadSitemap(websiteId: number, autoSubmitGSC: boolean = true): Promise<CreateSitemapResponse> {
+    return this.fetchJson('/api/sitemap/create-and-upload', {
+      method: 'POST',
+      body: JSON.stringify({ website_id: websiteId, auto_submit_gsc: autoSubmitGSC })
     });
   }
 

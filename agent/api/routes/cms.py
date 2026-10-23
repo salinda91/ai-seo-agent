@@ -12,6 +12,7 @@ from ...workflows.cms.wordpress import WordPressAutomation
 from ...workflows.cms.woocommerce import WooCommerceAutomation
 from ...workflows.cms.laravel import LaravelAdminAutomation
 from ...workflows.codebase.git_fixer import local_codebase_fixer
+from ...workflows.sitemap import sitemap_manager
 
 router = APIRouter(prefix="/api/cms", tags=["CMS Automation & Rollback"], dependencies=[Depends(get_current_token_auth)])
 
@@ -52,6 +53,15 @@ async def apply_seo_change(payload: ApplyChangeRequest, db: AsyncSession = Depen
     site = res.scalar_one_or_none()
     if not site:
         raise HTTPException(status_code=404, detail="Website not found.")
+
+    # 0. XML Sitemap Generation & Upload
+    if payload.field_name in ("sitemap", "sitemap.xml") or payload.url.endswith("sitemap.xml"):
+        result = await sitemap_manager.create_and_upload_sitemap(
+            website_id=site.id,
+            db=db,
+            auto_submit_gsc=True
+        )
+        return result
 
     # 1. WordPress
     if site.cms_type == "wordpress":

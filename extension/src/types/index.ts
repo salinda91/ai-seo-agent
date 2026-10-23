@@ -193,3 +193,32 @@ export interface CodebaseFixResult {
   error?: string;
 }
 
+export interface SitemapStatusResponse {
+  website_id: number;
+  domain: string;
+  available: boolean;
+  sitemap_url: string;
+  status_code: number;
+  details: string;
+  has_local_file: boolean;
+  local_path: string | null;
+  has_missing_recommendation: boolean;
+  can_create_and_upload: boolean;
+  cms_type: string;
+}
+
+export interface CreateSitemapResponse {
+  success: boolean;
+  message: string;
+  sitemap_url: string;
+  urls_count: number;
+  urls?: string[];
+  target_file?: string;
+  commit_sha?: string;
+  pushed_to_git?: boolean;
+  gsc_submitted?: boolean;
+  gsc_message?: string;
+  error?: string;
+}
+
+

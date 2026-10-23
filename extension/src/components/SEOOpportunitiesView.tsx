@@ -35,14 +35,28 @@ export const SEOOpportunitiesView: React.FC<Props> = ({ website, onRefreshStats 
   const handleApply = async (rec: RecommendationItem) => {
     if (!website) return;
     const isWP = website.cms_type === 'wordpress' || website.cms_type === 'woocommerce';
-    if (!isWP && !website.local_repo_path) {
+    const changeData = rec.proposed_change_data || {};
+    const isSitemapRec = rec.issue_title === "Missing XML Sitemap" || changeData.field === "sitemap" || rec.url.endsWith("sitemap.xml");
+
+    if (!isSitemapRec && !isWP && !website.local_repo_path) {
       alert('This website is configured as custom/codebase. Please connect its local codebase folder path in Connected Websites first so the agent can apply changes to code and push to Git.');
       return;
     }
 
     setLoadingId(rec.id);
     try {
-      const changeData = rec.proposed_change_data || {};
+      if (isSitemapRec) {
+        const res = await api.createAndUploadSitemap(website.id);
+        if (res.success) {
+          alert(`Success! ${res.message || 'XML sitemap created, deployed to website, and submitted to Search Console!'}`);
+          loadData();
+          onRefreshStats();
+        } else {
+          alert(`Sitemap error: ${res.error || 'Failed to create sitemap'}`);
+        }
+        return;
+      }
+
       const field = changeData.field || 'meta_description';
       const newVal = changeData.proposed_value || rec.proposed_fix;
 
@@ -307,37 +321,51 @@ export const SEOOpportunitiesView: React.FC<Props> = ({ website, onRefreshStats 
                     </span>
                   </div>
                   <div className="flex space-x-1.5 shrink-0">
-                    <button
-                      onClick={() => handleApply(rec)}
-                      disabled={isLoading}
-                      className={`flex items-center space-x-1 px-3 py-1 rounded text-xs font-semibold transition shadow disabled:opacity-50 ${
-                        isWP
-                          ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                          : 'bg-cyan-600 hover:bg-cyan-500 text-white'
-                      }`}
-                      title={
-                        isWP
-                          ? 'Apply this change to WordPress via browser automation'
-                          : 'Apply this fix directly to your code template and push to Git'
-                      }
-                    >
-                      {isLoading ? (
-                        <>
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          <span>Applying...</span>
-                        </>
-                      ) : isWP ? (
-                        <>
-                          <Zap className="w-3.5 h-3.5 text-amber-300" />
-                          <span>Apply in WordPress</span>
-                        </>
-                      ) : (
-                        <>
-                          <GitCommit className="w-3.5 h-3.5 text-white" />
-                          <span>Apply to Code & Push</span>
-                        </>
-                      )}
-                    </button>
+                    {(() => {
+                      const isSitemapRec = rec.issue_title === "Missing XML Sitemap" || changeData.field === "sitemap" || rec.url.endsWith("sitemap.xml");
+                      return (
+                        <button
+                          onClick={() => handleApply(rec)}
+                          disabled={isLoading}
+                          className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs font-semibold transition shadow disabled:opacity-50 ${
+                            isSitemapRec
+                              ? 'bg-gradient-to-r from-amber-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 text-white font-bold'
+                              : isWP
+                              ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                              : 'bg-cyan-600 hover:bg-cyan-500 text-white'
+                          }`}
+                          title={
+                            isSitemapRec
+                              ? 'Create XML sitemap, deploy to codebase/server, and submit to Search Console'
+                              : isWP
+                              ? 'Apply this change to WordPress via browser automation'
+                              : 'Apply this fix directly to your code template and push to Git'
+                          }
+                        >
+                          {isLoading ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>{isSitemapRec ? 'Creating & Uploading...' : 'Applying...'}</span>
+                            </>
+                          ) : isSitemapRec ? (
+                            <>
+                              <Sparkles className="w-3.5 h-3.5 text-amber-200" />
+                              <span>Create and Upload Sitemap</span>
+                            </>
+                          ) : isWP ? (
+                            <>
+                              <Zap className="w-3.5 h-3.5 text-amber-300" />
+                              <span>Apply in WordPress</span>
+                            </>
+                          ) : (
+                            <>
+                              <GitCommit className="w-3.5 h-3.5 text-white" />
+                              <span>Apply to Code & Push</span>
+                            </>
+                          )}
+                        </button>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
